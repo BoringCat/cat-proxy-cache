@@ -22,7 +22,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
@@ -172,7 +171,7 @@ type CacheIndex struct {
 	lock     sync.RWMutex
 	ch       chan *IndexCall
 	interval time.Duration
-	changed  atomic.Uint64
+	changed  map[string][]*IndexCall
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -180,7 +179,7 @@ type CacheIndex struct {
 
 func (i *CacheIndex) Start() {
 	i.ctx, i.cancel = context.WithCancel(context.Background())
-	go i.doAction()
+	go i.actionChannel()
 	go i.writeBackTimer()
 }
 
@@ -198,45 +197,80 @@ func (i *CacheIndex) Stop() {
 func (i *CacheIndex) doAppend(action *IndexCall) {
 	i.lock.Lock()
 	defer i.lock.Unlock()
-	hi := i.get(action.Host)
+	_, hi := i.get(action.Host, false)
 	if ks, ok := hi[action.Path]; ok {
 		hi[action.Path] = append(ks, action.Key)
 	} else {
 		hi[action.Path] = []string{action.Key}
 	}
 	i.index[action.Host] = hi
-	i.changed.Add(1)
+	if cs, ok := i.changed[action.Host]; ok {
+		i.changed[action.Host] = append(cs, action)
+	} else {
+		i.changed[action.Host] = []*IndexCall{action}
+	}
 }
 func (i *CacheIndex) doDelete(action *IndexCall) {
 	i.lock.Lock()
 	defer i.lock.Unlock()
-	hi := i.get(action.Host)
+	_, hi := i.get(action.Host, false)
 	delete(hi, action.Path)
 	i.index[action.Host] = hi
-	i.changed.Add(1)
+	if cs, ok := i.changed[action.Host]; ok {
+		i.changed[action.Host] = append(cs, action)
+	} else {
+		i.changed[action.Host] = []*IndexCall{action}
+	}
 }
 
-func (i *CacheIndex) doAction() {
+func (i *CacheIndex) doAction(action *IndexCall) {
+	switch action.Action {
+	case IndexAppend:
+		i.doAppend(action)
+	case IndexDelete:
+		i.doDelete(action)
+	case IndexFlush:
+		i.doWriteBack()
+	}
+}
+
+func (i *CacheIndex) actionChannel() {
 	i.wg.Add(1)
 	defer i.wg.Done()
 	defer i.logger.Debug("停止缓存索引动作协程")
 	for action := range i.ch {
-		switch action.Action {
-		case IndexAppend:
-			i.doAppend(action)
-		case IndexDelete:
-			i.doDelete(action)
-		case IndexFlush:
-			i.doWriteBack()
-		}
+		i.doAction(action)
 	}
 }
 
+func (i *CacheIndex) doOneEncodeAndWrite(item *memcache.Item, index map[string][]string) (err error) {
+	var buf bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&buf, 4)
+	if err != nil {
+		i.logger.Error("压缩缓存索引失败", "err", err)
+		return
+	}
+	defer writer.Close()
+	if err = gob.NewEncoder(writer).Encode(index); err != nil {
+		i.logger.Error("压缩缓存索引失败", "err", err)
+		return
+	}
+	writer.Flush()
+	item.Value = buf.Bytes()
+	err = i.client.CompareAndSwap(item)
+	return
+}
+
 func (i *CacheIndex) doWriteBack() {
-	i.lock.RLock()
-	defer i.lock.RUnlock()
-	i.logger.Debug("开始回写缓存索引", "changed", i.changed.Load())
+	i.lock.Lock()
+	defer i.lock.Unlock()
+	conflicts := []string{}
 	for host, idx := range i.index {
+		changeNum := len(i.changed[host])
+		if changeNum == 0 {
+			continue
+		}
+		i.logger.Debug("开始回写缓存索引", "host", host, "changed", changeNum)
 		idxKey := fmt.Sprintf("index/%s", host)
 		item, err := i.client.Get(idxKey)
 		switch err {
@@ -244,39 +278,48 @@ func (i *CacheIndex) doWriteBack() {
 		case memcache.ErrCacheMiss:
 			item = &memcache.Item{Key: idxKey}
 		default:
-			i.logger.Error("获取缓存索引失败", "err", err)
+			i.logger.Error("获取缓存索引失败", "err", err, "host", host)
 			continue
 		}
-		var buf bytes.Buffer
-		writer, err := gzip.NewWriterLevel(&buf, 4)
-		if err != nil {
-			i.logger.Error("压缩缓存索引失败", "err", err)
-			continue
-		}
-		defer writer.Close()
-		if err = gob.NewEncoder(writer).Encode(idx); err != nil {
-			i.logger.Error("压缩缓存索引失败", "err", err)
-			continue
-		}
-		writer.Flush()
-		item.Value = buf.Bytes()
-		err = i.client.CompareAndSwap(item)
-		switch err {
+		err = i.doOneEncodeAndWrite(item, idx)
+		switch i.doOneEncodeAndWrite(item, idx) {
 		case nil:
 			i.logger.Debug("回写缓存索引成功", "host", host, "key", idxKey)
+			i.changed[host] = i.changed[host][:0]
 		case memcache.ErrCacheMiss:
 			if err := i.client.Set(item); err != nil {
 				i.logger.Error("回写缓存索引失败", "err", err, "host", host, "key", idxKey)
 			} else {
 				i.logger.Debug("回写缓存索引成功", "host", host, "key", idxKey)
 			}
+			i.changed[host] = i.changed[host][:0]
+		case memcache.ErrCASConflict:
+			// 回写冲突
+			conflicts = append(conflicts, host)
+			i.logger.Info("回写缓存索引冲突", "err", err, "host", host, "key", idxKey)
 		default:
-			// TODO:多实例冲突时处理。只影响清理缓存
-			i.logger.Error("设置缓存索引失败", "err", err, "host", host, "key", idxKey)
-			continue
+			i.logger.Error("回写缓存索引失败", "err", err, "host", host, "key", idxKey)
+			i.changed[host] = i.changed[host][:0]
 		}
 	}
-	i.changed.Store(0)
+	var item *memcache.Item
+	for _, host := range conflicts {
+		if item, i.index[host] = i.get(host, true); item != nil {
+			for _, changed := range i.changed[host] {
+				i.doAction(changed)
+			}
+			err := i.doOneEncodeAndWrite(item, i.index[host])
+			switch err {
+			case nil:
+				i.logger.Debug("缓存索引冲突重写成功", "host", host)
+			default:
+				i.logger.Error("缓存索引冲突重写失败", "err", err, "host", host)
+			}
+		} else {
+			i.logger.Error("缓存索引冲突重写失败: 获取数据失败", "host", host)
+		}
+		i.changed[host] = i.changed[host][:0]
+	}
 }
 
 func (i *CacheIndex) writeBackTimer() {
@@ -288,23 +331,24 @@ func (i *CacheIndex) writeBackTimer() {
 	for {
 		select {
 		case <-timer.C:
-			if i.changed.Load() > 0 {
-				i.doWriteBack()
-			}
+			i.doWriteBack()
 		case <-i.ctx.Done():
 			return
 		}
 	}
 }
 
-func (i *CacheIndex) get(host string) (index map[string][]string) {
-	if hi, ok := i.index[host]; ok {
-		return hi
+func (i *CacheIndex) get(host string, reload bool) (item *memcache.Item, index map[string][]string) {
+	if !reload {
+		if hi, ok := i.index[host]; ok {
+			return nil, hi
+		}
 	}
+	var err error
 	i.logger.Debug("加载缓存索引", "host", host)
 	index = make(map[string][]string)
 	idxKey := fmt.Sprintf("index/%s", host)
-	item, err := i.client.Get(idxKey)
+	item, err = i.client.Get(idxKey)
 	if err != nil {
 		return
 	}
@@ -320,7 +364,7 @@ func (i *CacheIndex) get(host string) (index map[string][]string) {
 func (i *CacheIndex) Items(host string) iter.Seq2[string, []string] {
 	i.lock.RLock()
 	defer i.lock.RUnlock()
-	hi := i.get(host)
+	_, hi := i.get(host, false)
 	return func(yield func(string, []string) bool) {
 		for key, vs := range hi {
 			if !yield(key, vs) {
@@ -353,7 +397,7 @@ func (i *CacheIndex) Values(host string) iter.Seq[[]string] {
 func (i *CacheIndex) Get(host, path string) []string {
 	i.lock.RLock()
 	defer i.lock.RUnlock()
-	hi := i.get(host)
+	_, hi := i.get(host, false)
 	return hi[path]
 }
 

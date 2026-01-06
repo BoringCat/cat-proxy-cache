@@ -7,20 +7,34 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-type Memcached struct {
-	Hashed         *string       `yaml:"hashed"`
-	Address        []string      `yaml:"address"`
-	IndexWriteBack time.Duration `yaml:"index_write_back"`
+type Rediscached struct {
+	IsCluster bool     `yaml:"cluster"`
+	Db        int      `yaml:"db"`
+	Address   []string `yaml:"address"`
+	Username  string   `yaml:"username"`
+	Password  string   `yaml:"password"`
+
+	MaxRedirects    int           `yaml:"max_redirects,omitempty"`
+	PoolSize        int           `yaml:"pool_size,omitempty"`
+	PoolTimeout     time.Duration `yaml:"pool_timeout,omitempty"`
+	MinIdleConns    int           `yaml:"min_idle_conns,omitempty"`
+	MaxIdleConns    int           `yaml:"max_idle_conns,omitempty"`
+	MaxActiveConns  int           `yaml:"max_active_conns,omitempty"`
+	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time,omitempty"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime,omitempty"`
+
+	ReadBufferSize  int `yaml:"read_buffer_size,omitempty"`
+	WriteBufferSize int `yaml:"write_buffer_size,omitempty"`
 
 	client *Cacher
 }
 
-func (m *Memcached) New() (*Cacher, bool) {
+func (m *Rediscached) New() *Cacher {
 	if m.client != nil {
-		return m.client, false
+		return m.client
 	}
 	m.client = NewCache(m)
-	return m.client, true
+	return m.client
 }
 
 type Model struct {
@@ -28,7 +42,7 @@ type Model struct {
 	TTL            *map[int]time.Duration `yaml:"ttl,omitempty"`
 	FollowRedirect *bool                  `yaml:"follow_redirect"`
 	CacheKey       *string                `yaml:"cache_key,omitempty"`
-	Memcached      *Memcached             `yaml:"memcached"`
+	Redis          *Rediscached           `yaml:"redis"`
 }
 
 type Path struct {
@@ -45,8 +59,8 @@ type VServer struct {
 }
 
 type Config struct {
-	Memcached *Memcached `yaml:"memcached"`
-	Servers   []*VServer `yaml:"servers"`
+	Redis   *Rediscached `yaml:"redis"`
+	Servers []*VServer   `yaml:"servers"`
 }
 
 func loadConfig(fpath string) *Config {

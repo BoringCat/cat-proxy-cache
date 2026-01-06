@@ -113,15 +113,12 @@ func main() {
 		for _, p := range vs.Paths {
 			var server, prune http.HandlerFunc
 			var err error
-			mc, isNew := orderValue(p.Memcached, vs.Memcached, conf.Memcached).New()
-			if isNew {
-				callbacks = append(callbacks, mc.Close)
-			}
+			cache := orderValue(p.Redis, vs.Redis, conf.Redis).New()
 			redirect := orderValue(p.FollowRedirect, vs.FollowRedirect)
 			if redirect != nil && !*redirect {
-				server, prune, err = NewServer(vs, p, noRedriectClient, mc)
+				server, prune, err = NewServer(vs, p, noRedriectClient, cache)
 			} else {
-				server, prune, err = NewServer(vs, p, client, mc)
+				server, prune, err = NewServer(vs, p, client, cache)
 			}
 			prefix, _ := strings.CutSuffix(p.Prefix, "/")
 			prefix = fmt.Sprint(prefix, "/")

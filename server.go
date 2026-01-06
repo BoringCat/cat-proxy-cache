@@ -25,7 +25,6 @@ const (
 )
 
 type cacheOpt struct {
-	ctx             context.Context
 	r               io.ReadCloser
 	host, path, key string
 	cacher          *Cacher
@@ -71,7 +70,7 @@ func executeTemplate(tpl *template.Template, data any) (resp string, err error) 
 	return
 }
 
-func setCached(opt *cacheOpt) {
+func setCached(ctx context.Context, opt *cacheOpt) {
 	defer opt.r.Close()
 	var err error
 	cache := CachedResp{Code: opt.code, Header: opt.header}
@@ -79,7 +78,7 @@ func setCached(opt *cacheOpt) {
 	if err != nil {
 		logger.Debug("读取缓存数据失败", "err", err)
 		return
-	} else if err = context.Cause(opt.ctx); err != nil && err != context.Canceled {
+	} else if err = context.Cause(ctx); err != nil && err != context.Canceled {
 		// EOF情况之一: 客户端取消下载
 		logger.Debug("验证缓存数据失败", "err", err)
 		return
@@ -88,7 +87,7 @@ func setCached(opt *cacheOpt) {
 		logger.Debug("验证缓存数据失败", "size", opt.size, "length", length)
 		return
 	}
-	opt.cacher.SetCache(opt.host, opt.path, opt.key, &cache, opt.ttl)
+	opt.cacher.SetCache(context.Background(), opt.host, opt.path, opt.key, &cache, opt.ttl)
 }
 
 func NewServer(vs *VServer, p *Path, client *http.Client, cache *Cacher) (handleContent, handlePrune http.HandlerFunc, err error) {
@@ -139,14 +138,15 @@ func NewServer(vs *VServer, p *Path, client *http.Client, cache *Cacher) (handle
 		defer fmt.Fprint(w, "]")
 		enc := json.NewEncoder(w)
 		deleted := false
-		for key := range cache.Keys(vs.Host) {
+		for key := range cache.Keys(r.Context(), vs.Host) {
+			logger.Debug("查询到键", "key", key)
 			if strings.HasSuffix(r.URL.Path, "*") {
 				prefix := strings.TrimSuffix(r.URL.Path, "*")
 				if strings.HasPrefix(key, prefix) {
 					if deleted {
 						fmt.Fprint(w, ",")
 					}
-					cache.DeleteByPath(vs.Host, key)
+					cache.DeleteByPath(r.Context(), vs.Host, key)
 					enc.Encode(key)
 					deleted = true
 				}
@@ -154,15 +154,11 @@ func NewServer(vs *VServer, p *Path, client *http.Client, cache *Cacher) (handle
 				if deleted {
 					fmt.Fprint(w, ",")
 				}
-				cache.DeleteByPath(vs.Host, key)
+				cache.DeleteByPath(r.Context(), vs.Host, key)
 				enc.Encode(key)
 				deleted = true
 			}
 		}
-		if deleted {
-			cache.Flush()
-		}
-		w.Header().Set("Content-Type", "application/json")
 	}
 	handleContent = func(w http.ResponseWriter, r *http.Request) {
 		upstream := getUrl(r)
@@ -180,7 +176,7 @@ func NewServer(vs *VServer, p *Path, client *http.Client, cache *Cacher) (handle
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		if cached := cache.GetCache(cacheKey); cached != nil {
+		if cached := cache.GetCache(r.Context(), cacheKey); cached != nil {
 			for k, vs := range cached.Header {
 				for _, v := range vs {
 					w.Header().Add(k, v)
@@ -218,8 +214,8 @@ func NewServer(vs *VServer, p *Path, client *http.Client, cache *Cacher) (handle
 			if req.Method == http.MethodHead || req.Method == http.MethodOptions {
 				datalen = -1
 			}
-			go setCached(&cacheOpt{
-				context, pr, vs.Host, r.URL.Path, cacheKey, cache,
+			go setCached(context, &cacheOpt{
+				pr, vs.Host, r.URL.Path, cacheKey, cache,
 				datalen, resp.StatusCode, resp.Header, ttl,
 			})
 			w.Header().Set("X-Cache-Status", "MISS")

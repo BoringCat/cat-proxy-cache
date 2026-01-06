@@ -138,26 +138,14 @@ func NewServer(vs *VServer, p *Path, client *http.Client, cache *Cacher) (handle
 		defer fmt.Fprint(w, "]")
 		enc := json.NewEncoder(w)
 		deleted := false
-		for key := range cache.Keys(r.Context(), vs.Host) {
+		for key := range cache.Scan(r.Context(), vs.Host, r.URL.Path) {
 			logger.Debug("查询到键", "key", key)
-			if strings.HasSuffix(r.URL.Path, "*") {
-				prefix := strings.TrimSuffix(r.URL.Path, "*")
-				if strings.HasPrefix(key, prefix) {
-					if deleted {
-						fmt.Fprint(w, ",")
-					}
-					cache.DeleteByPath(r.Context(), vs.Host, key)
-					enc.Encode(key)
-					deleted = true
-				}
-			} else if key == r.URL.Path {
-				if deleted {
-					fmt.Fprint(w, ",")
-				}
-				cache.DeleteByPath(r.Context(), vs.Host, key)
-				enc.Encode(key)
-				deleted = true
+			if deleted {
+				fmt.Fprint(w, ",")
 			}
+			cache.DeleteByKey(r.Context(), key)
+			enc.Encode(strings.TrimPrefix(key, CacheIndexPrefix))
+			deleted = true
 		}
 	}
 	handleContent = func(w http.ResponseWriter, r *http.Request) {

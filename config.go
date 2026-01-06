@@ -14,6 +14,9 @@ type Rediscached struct {
 	Username  string   `yaml:"username"`
 	Password  string   `yaml:"password"`
 
+	DialTimeout     time.Duration `yaml:"dial_timeout,omitempty"`
+	ReadTimeout     time.Duration `yaml:"read_timeout,omitempty"`
+	WriteTimeout    time.Duration `yaml:"write_timeout,omitempty"`
 	MaxRedirects    int           `yaml:"max_redirects,omitempty"`
 	PoolSize        int           `yaml:"pool_size,omitempty"`
 	PoolTimeout     time.Duration `yaml:"pool_timeout,omitempty"`

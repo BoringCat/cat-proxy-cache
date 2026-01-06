@@ -14,6 +14,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	CacheIndexPrefix = "cache-index:"
+)
+
 type CachedResp struct {
 	Code   int
 	Header http.Header
@@ -35,6 +39,9 @@ func NewCache(conf *Rediscached) *Cacher {
 			Username:        conf.Username,
 			Password:        conf.Password,
 			MaxRedirects:    conf.MaxRedirects,
+			DialTimeout:     conf.DialTimeout,
+			ReadTimeout:     conf.ReadTimeout,
+			WriteTimeout:    conf.WriteTimeout,
 			PoolSize:        conf.PoolSize,
 			PoolTimeout:     conf.PoolTimeout,
 			MinIdleConns:    conf.MinIdleConns,
@@ -50,6 +57,9 @@ func NewCache(conf *Rediscached) *Cacher {
 			Addr:            conf.Address[0],
 			DB:              conf.Db,
 			Username:        conf.Username,
+			DialTimeout:     conf.DialTimeout,
+			ReadTimeout:     conf.ReadTimeout,
+			WriteTimeout:    conf.WriteTimeout,
 			Password:        conf.Password,
 			PoolSize:        conf.PoolSize,
 			PoolTimeout:     conf.PoolTimeout,
@@ -71,9 +81,9 @@ func NewCache(conf *Rediscached) *Cacher {
 
 func (c *Cacher) getIndexKey(host, path string) string {
 	if strings.HasPrefix(path, "/") {
-		return fmt.Sprintf("cache-index:%s%s", host, path)
+		return fmt.Sprint(CacheIndexPrefix, host, path)
 	} else {
-		return fmt.Sprintf("cache-index:%s/%s", host, path)
+		return fmt.Sprintf("%s%s/%s", CacheIndexPrefix, host, path)
 	}
 }
 
@@ -111,9 +121,9 @@ func (c *Cacher) SetCache(ctx context.Context, host, path, key string, value *Ca
 	}
 }
 
-func (c *Cacher) Keys(ctx context.Context, host string) iter.Seq[string] {
+func (c *Cacher) Scan(ctx context.Context, host, path string) iter.Seq[string] {
 	return func(yield func(string) bool) {
-		resp := c.client.Scan(ctx, 0, c.getIndexKey(host, "*"), 1024)
+		resp := c.client.Scan(ctx, 0, c.getIndexKey(host, path), 1024)
 		if err := resp.Err(); err != nil {
 			c.logger.Warn("Scan Keys失败", "err", err, "host", host)
 		}
@@ -124,52 +134,39 @@ func (c *Cacher) Keys(ctx context.Context, host string) iter.Seq[string] {
 			}
 		}
 	}
+}
 
-}
-func (c *Cacher) Values(ctx context.Context, host string) iter.Seq[[]string] {
-	return func(yield func([]string) bool) {
-		for _, vs := range c.Items(ctx, host) {
-			if !yield(vs) {
-				return
-			}
-		}
+func (c *Cacher) DeleteByKey(ctx context.Context, key string) {
+	keys, err := c.client.LRange(ctx, key, 0, -1).Result()
+	switch err {
+	case nil:
+	case redis.Nil:
+		c.logger.Debug("没有获取到缓存键列表", "key", key, "keys", keys)
+		return
+	default:
+		c.logger.Warn("获取缓存键失败", "err", err, "key", key)
+		return
+	}
+	c.logger.Debug("获取到缓存键列表", "key", key, "keys", keys)
+	if err := c.client.Del(ctx, append(keys, key)...).Err(); err != nil {
+		c.logger.Warn("删除缓存失败", "err", err, "key", key)
+		return
 	}
 }
-func (c *Cacher) Items(ctx context.Context, host string) iter.Seq2[string, []string] {
-	return func(yield func(string, []string) bool) {
-		resp := c.client.Scan(ctx, 0, c.getIndexKey(host, "*"), 1024)
-		if err := resp.Err(); err != nil {
-			c.logger.Warn("Scan Keys失败", "err", err, "host", host)
-		}
-		iter := resp.Iterator()
-		for iter.Next(ctx) {
-			key := iter.Val()
-			vals, err := c.client.LRange(ctx, key, 0, -1).Result()
-			switch err {
-			case nil:
-				if !yield(key, vals) {
-					return
-				}
-			case redis.Nil:
-				continue
-			default:
-				c.logger.Warn("获取所有Keys失败", "err", err, "host", host, "path", key)
-				continue
-			}
-		}
-	}
-}
+
 func (c *Cacher) DeleteByPath(ctx context.Context, host, path string) {
 	key := c.getIndexKey(host, path)
 	keys, err := c.client.LRange(ctx, key, 0, -1).Result()
 	switch err {
 	case nil:
 	case redis.Nil:
+		c.logger.Debug("没有获取到缓存键列表", "host", host, "path", path, "keys", keys)
 		return
 	default:
 		c.logger.Warn("获取缓存键失败", "err", err, "host", host, "path", path)
 		return
 	}
+	c.logger.Debug("获取到缓存键列表", "host", host, "path", key, "keys", keys)
 	if err := c.client.Del(ctx, append(keys, key)...).Err(); err != nil {
 		c.logger.Warn("删除缓存失败", "err", err, "host", host, "path", path)
 		return

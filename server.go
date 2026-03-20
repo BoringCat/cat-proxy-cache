@@ -13,9 +13,12 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 type CtxKey struct {
@@ -57,6 +60,26 @@ type CacheResponseWriter struct {
 	getTTL func(int) (time.Duration, error)
 	ttl    time.Duration
 	cached bool
+}
+
+func (w *CacheResponseWriter) ContentLength() int64 {
+	clHeader := w.w.Header().Get("Content-Length")
+	switch {
+	case clHeader != "":
+		cl, err := strconv.ParseInt(clHeader, 10, 64)
+		if err != nil {
+			return -1
+		}
+		if cl < 0 {
+			// Content-Length values less than 0 are invalid.
+			// See: https://datatracker.ietf.org/doc/html/rfc2616/#section-
+			return -1
+		}
+		return cl
+	default:
+		// If the response length is not declared, set it to -1.
+		return -1
+	}
 }
 
 func (w *CacheResponseWriter) Header() http.Header {
@@ -140,6 +163,29 @@ func newHTTPRoundTripper(redirect bool) http.RoundTripper {
 	return &RedirectTransport{next: transport, maxRedirect: 0, logger: logger.With("logger", "transport")}
 }
 
+func proxyRewrite(pr *httputil.ProxyRequest) {
+	upstream := pr.In.Context().Value(UpStreamURL).(*url.URL)
+	for _, key := range slices.Collect(maps.Keys(pr.Out.Header)) {
+		if strings.HasPrefix(strings.ToLower(key), "x-cache-") {
+			pr.Out.Header.Del(key)
+		}
+	}
+	pr.SetURL(upstream)
+	pr.Out.Host = upstream.Host
+	pr.Out.Header.Set("Host", upstream.Host)
+}
+
+var (
+	defaultProxy = httputil.ReverseProxy{
+		Rewrite:   proxyRewrite,
+		Transport: newHTTPRoundTripper(true),
+	}
+	noRedirectProxy = httputil.ReverseProxy{
+		Rewrite:   proxyRewrite,
+		Transport: newHTTPRoundTripper(true),
+	}
+)
+
 type Server struct {
 	getUrl       func(*http.Request) (*url.URL, error)
 	cacheKeyTmpl *template.Template
@@ -149,7 +195,7 @@ type Server struct {
 	*ServerOpt
 }
 
-func NewServer2(opt ServerOpt) (obj *Server, err error) {
+func NewServer(opt ServerOpt) (obj *Server, err error) {
 	model := opt.getModel()
 	s := new(Server)
 	s.ServerOpt = &opt
@@ -191,49 +237,43 @@ func NewServer2(opt ServerOpt) (obj *Server, err error) {
 		}
 	}
 
-	s.proxy = &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			upstream := pr.In.Context().Value(UpStreamURL).(url.URL)
-			for _, key := range slices.Collect(maps.Keys(pr.Out.Header)) {
-				if strings.HasPrefix(strings.ToLower(key), "x-cache-") {
-					pr.Out.Header.Del(key)
-				}
-			}
-			pr.Out.Host = upstream.Host
-			pr.Out.Header.Set("Host", upstream.Host)
-			pr.Out.URL.Scheme = upstream.Scheme
-			pr.Out.URL.Opaque = upstream.Opaque
-			pr.Out.URL.User = upstream.User
-			pr.Out.URL.Host = upstream.Host
-			pr.Out.URL.Path = upstream.Path
-			pr.Out.URL.Fragment = upstream.Fragment
-			pr.Out.URL.RawQuery = upstream.RawQuery
-			pr.Out.URL.RawPath = upstream.RawPath
-			pr.Out.URL.RawFragment = upstream.RawFragment
-		},
-		Transport: newHTTPRoundTripper(!opt.NoRedirect),
+	if opt.NoRedirect {
+		s.proxy = &noRedirectProxy
+	} else {
+		s.proxy = &defaultProxy
 	}
 	obj = s
 	return
 }
 
+/*
+HandlePrune 处理清理缓存请求
+
+ 1. 根据请求路径查找缓存
+ 2. 根据缓存索引键清理缓存
+ 3. 流式返回清理的缓存键
+*/
 func (s *Server) HandlePrune(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprint(w, "[")
 	defer fmt.Fprint(w, "]")
 	enc := json.NewEncoder(w)
 	deleted := false
-	for key := range s.Cache.Scan(r.Context(), s.Vserver.Host, r.URL.Path) {
+	for key := range s.Cache.Scan(ctx, s.Vserver.Host, r.URL.Path) {
 		logger.Debug("查询到键", "key", key)
 		if deleted {
 			fmt.Fprint(w, ",")
 		}
-		s.Cache.DeleteByKey(r.Context(), key)
+		s.Cache.DeleteByKey(ctx, key)
 		enc.Encode(strings.TrimPrefix(key, CacheIndexPrefix))
 		deleted = true
 	}
 }
 
+/*
+executeTemplate 渲染缓存键
+*/
 func (s *Server) executeTemplate(data TemplateOpt) (resp string, err error) {
 	var buf bytes.Buffer
 	if err = s.cacheKeyTmpl.Execute(&buf, data); err != nil {
@@ -243,15 +283,21 @@ func (s *Server) executeTemplate(data TemplateOpt) (resp string, err error) {
 	return
 }
 
-func (s *Server) HandleCache(w http.ResponseWriter, r *http.Request) (cacheKey string, resp *CachedResp) {
-	upstream, ok := r.Context().Value(UpStreamURL).(url.URL)
+/*
+handleCache 渲染缓存键并获取缓存
+
+ 1. 交由 executeTemplate 获取缓存键
+ 2. 获取缓存并直接返回
+*/
+func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) (cacheKey string, resp *CachedResp) {
+	upstream, ok := r.Context().Value(UpStreamURL).(*url.URL)
 	if !ok {
 		s.logger.Warn("没有传入上游URL")
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
 	}
 	cacheKey, err := s.executeTemplate(TemplateOpt{
-		Upstream: &upstream,
+		Upstream: upstream,
 		Request:  r,
 	})
 	if err != nil {
@@ -263,6 +309,14 @@ func (s *Server) HandleCache(w http.ResponseWriter, r *http.Request) (cacheKey s
 	return
 }
 
+/*
+getTTL 按序获取数据缓存时间
+
+ 1. 从请求头 X-Cache-TTL-{statusCode} 获取duration
+ 2. 从请求头 X-Cache-TTL-{2,3,4,5}XX 获取duration
+ 3. 从请求头 X-Cache-TTL 获取duration
+ 4. 从配置文件中获取duraion
+*/
 func (s *Server) getTTL(h http.Header) func(int) (time.Duration, error) {
 	return func(statusCode int) (ttl time.Duration, err error) {
 		duration := h.Get(fmt.Sprint("X-Cache-TTL-", statusCode))
@@ -289,33 +343,70 @@ func (s *Server) getTTL(h http.Header) func(int) (time.Duration, error) {
 	}
 }
 
-func (s *Server) HandleProxy(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	upstream := ctx.Value(UpStreamURL).(url.URL)
-	cacheKey := ctx.Value(CacheKey).(string)
-	resp := CachedResp{}
-	pw := CacheResponseWriter{
-		w:      w,
-		resp:   &resp,
-		getTTL: s.getTTL(r.Header),
-		cached: true,
-	}
-	defer func() {
-		if err := recover(); err != nil {
-			s.logger.Info("转发数据失败", "err", err, "path", r.URL.Path)
+/*
+handleCacheData 处理数据缓存
+
+ 1. 使用 recover 判断数据传输是否完成
+ 2. 如果数据传输完成，将响应体储存到缓存
+ 3. 如果数据传输未完成，但缓存的响应体数据量和数据长度一致，依旧将响应体储存到缓存
+ 4. 如果数据传输未完成，不进行缓存
+*/
+func (s *Server) handleCacheData(url, upstream *url.URL, cacheKey string, pw *CacheResponseWriter, resp *CachedResp) {
+	err := recover()
+	switch err {
+	case nil:
+		s.logger.Debug("数据处理完成", "statusCode", resp.Code)
+		if pw.cached && pw.buffer.Len() > 0 {
+			resp.Data = pw.buffer.Bytes()
+			s.Cache.SetCache(context.TODO(), s.Vserver.Host, upstream.Path, cacheKey, resp, pw.ttl)
 		}
-	}()
-	s.proxy.ServeHTTP(&pw, r)
-	s.logger.Debug("数据处理完成", "statusCode", pw.resp.Code)
-	if pw.cached && pw.buffer.Len() > 0 {
-		resp.Data = pw.buffer.Bytes()
-		s.Cache.SetCache(context.TODO(), s.Vserver.Host, upstream.Path, cacheKey, pw.resp, pw.ttl)
+	case http.ErrAbortHandler:
+		contentLength := int(pw.ContentLength())
+		if pw.cached && pw.buffer.Len() > 0 && contentLength > 0 && pw.buffer.Len() == contentLength {
+			resp.Data = pw.buffer.Bytes()
+			s.Cache.SetCache(context.TODO(), s.Vserver.Host, upstream.Path, cacheKey, resp, pw.ttl)
+		} else {
+			s.logger.Info("转发数据结束，数据不完整或未验证", "err", err, "path", url.Path, "contentLength", contentLength, "transform", pw.buffer.Len())
+		}
+	default:
+		s.logger.Info("转发数据失败", "err", err, "path", url.Path)
 	}
 }
 
+/*
+HandleProxy 处理上游请求响应
+
+ 1. 使用 CacheResponseWriter 代理 http.ResponseWriter，捕获状态码与响应体
+ 2. 使用 CachedResp 储存响应
+ 3. 交由 handleCacheData 在完成时处理缓存
+*/
+func (s *Server) HandleProxy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		upstream := ctx.Value(UpStreamURL).(*url.URL)
+		cacheKey := ctx.Value(CacheKey).(string)
+		resp := CachedResp{}
+		pw := CacheResponseWriter{
+			w:      w,
+			resp:   &resp,
+			getTTL: s.getTTL(r.Header),
+			cached: true,
+		}
+		defer s.handleCacheData(r.URL, upstream, cacheKey, &pw, &resp)
+		next.ServeHTTP(&pw, r)
+	})
+}
+
+/*
+GetCache 判断是否存在缓存，并决定是否转发到上游
+
+ 1. 交由 handleCache 渲染缓存键并获取缓存
+ 2. 如果有缓存，直接返回缓存的数据
+ 3. 否则将缓存键设置到上下文，继续执行
+*/
 func (s *Server) GetCache(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key, cached := s.HandleCache(w, r)
+		key, cached := s.handleCache(w, r)
 		if cached != nil {
 			for k, vs := range cached.Header {
 				for _, v := range vs {
@@ -333,6 +424,12 @@ func (s *Server) GetCache(next http.Handler) http.Handler {
 	})
 }
 
+/*
+GetUpstream 渲染上游地址
+
+ 1. 使用请求体数据渲染上游地址，并设置到上下文
+ 2. 继续执行
+*/
 func (s *Server) GetUpstream(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstream, err := s.getUrl(r)
@@ -342,7 +439,7 @@ func (s *Server) GetUpstream(next http.Handler) http.Handler {
 			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 			return
 		}
-		ctx := context.WithValue(r.Context(), UpStreamURL, *upstream)
+		ctx := context.WithValue(r.Context(), UpStreamURL, upstream)
 		r = r.WithContext(ctx)
 		next.ServeHTTP(w, r)
 	})

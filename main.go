@@ -135,7 +135,7 @@ func main() {
 			var err error
 			cache := orderValue(p.Redis, vs.Redis, conf.Redis).New()
 			redirect := orderValue(p.FollowRedirect, vs.FollowRedirect)
-			server, err = NewServer2(ServerOpt{vs, p, cache, redirect != nil && !*redirect})
+			server, err = NewServer(ServerOpt{vs, p, cache, redirect != nil && !*redirect})
 			prefix, _ := strings.CutSuffix(p.Prefix, "/")
 			prefix = fmt.Sprint(prefix, "/")
 			if err != nil {

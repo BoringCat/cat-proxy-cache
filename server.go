@@ -165,7 +165,7 @@ func proxyRewrite(pr *httputil.ProxyRequest) {
 		}
 	}
 	pr.SetURL(upstream)
-	pr.Out.Host = upstream.Host
+	pr.Out.URL.Path, pr.Out.URL.RawPath, pr.Out.Host = upstream.Path, upstream.RawPath, upstream.Host
 	pr.Out.Header.Set("Host", upstream.Host)
 }
 

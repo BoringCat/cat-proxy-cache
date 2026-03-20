@@ -25,9 +25,10 @@ type CachedResp struct {
 }
 
 type Cacher struct {
-	client      redis.Cmdable
-	getCacheKey func(string) string
-	logger      *slog.Logger
+	client       redis.Cmdable
+	getCacheKey  func(string) string
+	logger       *slog.Logger
+	itemsPerScan int64
 }
 
 func NewCache(conf *Rediscached) *Cacher {
@@ -72,10 +73,15 @@ func NewCache(conf *Rediscached) *Cacher {
 			WriteBufferSize: conf.WriteBufferSize,
 		})
 	}
+	itemsPerScan := conf.ItemsPerScan
+	if itemsPerScan <= 0 {
+		itemsPerScan = 16
+	}
 	return &Cacher{
-		client:      client,
-		getCacheKey: getCacheKey,
-		logger:      logger.With("logger", "cache"),
+		client:       client,
+		getCacheKey:  getCacheKey,
+		logger:       logger.With("logger", "cache"),
+		itemsPerScan: itemsPerScan,
 	}
 }
 
@@ -123,7 +129,7 @@ func (c *Cacher) SetCache(ctx context.Context, host, path, key string, value *Ca
 
 func (c *Cacher) Scan(ctx context.Context, host, path string) iter.Seq[string] {
 	return func(yield func(string) bool) {
-		resp := c.client.Scan(ctx, 0, c.getIndexKey(host, path), 1024)
+		resp := c.client.Scan(ctx, 0, c.getIndexKey(host, path), c.itemsPerScan)
 		if err := resp.Err(); err != nil {
 			c.logger.Warn("Scan Keys失败", "err", err, "host", host)
 		}

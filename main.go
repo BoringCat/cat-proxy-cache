@@ -118,7 +118,7 @@ func startListenServer(listenAddr string, h http.Handler) (err error) {
 		}
 	}
 	callbacks = append(callbacks, listen.Close)
-	logger.Info("服务启动", "listenAddr", listenAddr)
+	logger.Info("服务启动", "listenAddr", listenAddr, "version", version, "gitBranch", gitBranch, "commit", commit)
 	server := &http.Server{Handler: handlers.RecoveryHandler()(h)}
 	callbacks = append(callbacks, server.Close)
 	err = server.Serve(listen)

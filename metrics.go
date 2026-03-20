@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -34,7 +35,14 @@ var (
 		Subsystem: "cache",
 		Name:      "key_length",
 		Help:      "缓存键的长度",
-		Buckets:   []float64{16, 32, 48, 64, 80, 96, 128, 160, 192, 224, 256},
+		Buckets:   slices.Collect(addRange[float64](16, 256, 16)),
+	})
+	prune_scan_histogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: "cat_proxy",
+		Subsystem: "cache",
+		Name:      "prune_scan_seconds",
+		Help:      "扫描键的耗时",
+		Buckets:   slices.Collect(multipRange(0.001, 1.024, 2)),
 	})
 )
 

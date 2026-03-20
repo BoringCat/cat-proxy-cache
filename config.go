@@ -26,6 +26,8 @@ type Rediscached struct {
 	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time,omitempty"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime,omitempty"`
 
+	ItemsPerScan int64 `yaml:"items_per_scan,omitempty"`
+
 	ReadBufferSize  int `yaml:"read_buffer_size,omitempty"`
 	WriteBufferSize int `yaml:"write_buffer_size,omitempty"`
 

@@ -21,10 +21,10 @@ import (
 )
 
 var (
-	configFile string
-	listenAddr string
-	metricAddr string
-	logLevel   string
+	configFile  string
+	listenAddrs []string
+	metricAddr  string
+	logLevel    string
 
 	logger    *slog.Logger
 	callbacks []func() error
@@ -45,7 +45,7 @@ func parseArgs() {
 	app.HelpFlag.Short('h')
 	app.Version(getVersionStr()).VersionFlag.Short('v')
 	app.Flag("config", "配置文件").Short('c').Required().ExistingFileVar(&configFile)
-	app.Flag("listen", "监听地址").Short('l').Required().StringVar(&listenAddr)
+	app.Flag("listen", "监听地址").Short('l').Required().StringsVar(&listenAddrs)
 	app.Flag("metrics-listen", "监听地址").StringVar(&metricAddr)
 	app.Flag("log-level", "日志等级").Default("WARN").EnumVar(&logLevel, "DEBUG", "INFO", "WARN", "ERROR")
 
@@ -94,62 +94,13 @@ func newHTTPClient() (*http.Client, *http.Client) {
 	return client, noRedriectClient
 }
 
-func main() {
-	parseArgs()
-	prometheus.MustRegister(request_time, cached_total, response_data, cache_key_length)
-	sch := make(chan os.Signal, runtime.NumCPU())
-	signal.Notify(sch, syscall.SIGINT, syscall.SIGTERM)
-	go handleSignal(sch)
-	conf := loadConfig(configFile)
-	r := mux.NewRouter().StrictSlash(true)
-	r.Use(prometheusMiddleware)
-	if len(metricAddr) > 0 {
-		go startMetricServer()
-	} else {
-		r.Handle("/metrics", promhttp.Handler())
-	}
-	client, noRedriectClient := newHTTPClient()
-	for _, vs := range conf.Servers {
-		for _, p := range vs.Paths {
-			var server, prune http.HandlerFunc
-			var err error
-			cache := orderValue(p.Redis, vs.Redis, conf.Redis).New()
-			redirect := orderValue(p.FollowRedirect, vs.FollowRedirect)
-			if redirect != nil && !*redirect {
-				server, prune, err = NewServer(vs, p, noRedriectClient, cache)
-			} else {
-				server, prune, err = NewServer(vs, p, client, cache)
-			}
-			prefix, _ := strings.CutSuffix(p.Prefix, "/")
-			prefix = fmt.Sprint(prefix, "/")
-			if err != nil {
-				logger.Error("创建路径监听失败", "err", err, "host", vs.Host, "prefix", prefix)
-				return
-			}
-			sr := r.PathPrefix(prefix).Methods(http.MethodGet, http.MethodHead).Handler(server)
-			pr := r.PathPrefix(prefix).Methods("PRUNE").Handler(prune)
-			if len(vs.Host) > 0 {
-				sr.Host(vs.Host)
-				pr.Host(vs.Host)
-			}
-			logger.Debug("创建路径监听", "prefix", prefix, "upstream", *orderValue(p.Upstream, vs.Upstream), "host", vs.Host)
-			if err := sr.GetError(); err != nil {
-				logger.Error("创建数据路由失败", "err", err, "host", vs.Host, "prefix", prefix)
-			}
-			if err := pr.GetError(); err != nil {
-				logger.Error("创建清理路由失败", "err", err, "host", vs.Host, "prefix", prefix)
-			}
-		}
-	}
-	var err error
+func startListenServer(listenAddr string, h http.Handler) (err error) {
 	var listen net.Listener
-	var ctx context.Context
 	listens := strings.SplitN(listenAddr, ":", 2)
-	ctx, waitStop = context.WithCancel(context.TODO())
 	switch listens[0] {
 	case "unix":
 		if listen, err = net.Listen("unix", listens[1]); err != nil {
-			panic(err)
+			return
 		}
 		if !strings.HasPrefix(listens[1], "@") {
 			os.Chmod(listens[1], 0o666)
@@ -168,10 +119,71 @@ func main() {
 	}
 	callbacks = append(callbacks, listen.Close)
 	logger.Info("服务启动", "listenAddr", listenAddr)
-	server := &http.Server{Handler: handlers.RecoveryHandler()(r)}
+	server := &http.Server{Handler: handlers.RecoveryHandler()(h)}
 	callbacks = append(callbacks, server.Close)
-	if err = server.Serve(listen); err != nil && err != http.ErrServerClosed {
-		panic(err)
+	err = server.Serve(listen)
+	if err != nil && err == http.ErrServerClosed {
+		err = nil
+	}
+	return
+}
+
+func main() {
+	parseArgs()
+	prometheus.MustRegister(
+		request_time, cached_total, response_data, cache_key_length,
+		prune_scan_histogram,
+	)
+	sch := make(chan os.Signal, runtime.NumCPU())
+	signal.Notify(sch, syscall.SIGINT, syscall.SIGTERM)
+	go handleSignal(sch)
+	conf := loadConfig(configFile)
+	r := mux.NewRouter().StrictSlash(true)
+	r.Use(prometheusMiddleware)
+	if len(metricAddr) > 0 {
+		go startMetricServer()
+	} else {
+		r.Handle("/metrics", promhttp.Handler())
+	}
+	client, noRedriectClient := newHTTPClient()
+	for _, vs := range conf.Servers {
+		for _, p := range vs.Paths {
+			var server *Server
+			var err error
+			cache := orderValue(p.Redis, vs.Redis, conf.Redis).New()
+			redirect := orderValue(p.FollowRedirect, vs.FollowRedirect)
+			if redirect != nil && !*redirect {
+				server, err = NewServer2(ServerOpt{vs, p, noRedriectClient, cache})
+			} else {
+				server, err = NewServer2(ServerOpt{vs, p, client, cache})
+			}
+			prefix, _ := strings.CutSuffix(p.Prefix, "/")
+			prefix = fmt.Sprint(prefix, "/")
+			if err != nil {
+				logger.Error("创建路径监听失败", "err", err, "host", vs.Host, "prefix", prefix)
+				return
+			}
+			pr := r.PathPrefix(prefix).
+				Methods(http.MethodGet, http.MethodHead).
+				Handler(server.GetUpstream(server.GetCache(http.HandlerFunc(server.HandleProxy))))
+			cr := r.PathPrefix(prefix).Methods("PRUNE").HandlerFunc(server.HandlePrune)
+			if len(vs.Host) > 0 {
+				pr.Host(vs.Host)
+				cr.Host(vs.Host)
+			}
+			logger.Debug("创建路径监听", "prefix", prefix, "upstream", *orderValue(p.Upstream, vs.Upstream), "host", vs.Host)
+			if err := pr.GetError(); err != nil {
+				logger.Error("创建数据路由失败", "err", err, "host", vs.Host, "prefix", prefix)
+			}
+			if err := cr.GetError(); err != nil {
+				logger.Error("创建清理路由失败", "err", err, "host", vs.Host, "prefix", prefix)
+			}
+		}
+	}
+	var ctx context.Context
+	ctx, waitStop = context.WithCancel(context.TODO())
+	for _, addr := range listenAddrs {
+		go startListenServer(addr, r)
 	}
 	<-ctx.Done()
 }

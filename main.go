@@ -167,7 +167,7 @@ func main() {
 		}
 	}
 	callbacks = append(callbacks, listen.Close)
-	logger.Info("服务启动", "listenAddr", listenAddr)
+	logger.Info("服务启动", "listenAddr", listenAddr, "version", version, "gitBranch", gitBranch, "commit", commit)
 	server := &http.Server{Handler: handlers.RecoveryHandler()(r)}
 	callbacks = append(callbacks, server.Close)
 	if err = server.Serve(listen); err != nil && err != http.ErrServerClosed {

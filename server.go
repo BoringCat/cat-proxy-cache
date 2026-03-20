@@ -37,19 +37,19 @@ type TemplateOpt struct {
 }
 
 type ServerOpt struct {
-	Vserver    *VServer
-	Path       *Path
-	Cache      *Cacher
-	NoRedirect bool
+	Vserver     *VServer
+	Path        *Path
+	Cache       *Cacher
+	MaxRedirect *int
 }
 
 func (opt *ServerOpt) getModel() *Model {
 	return &Model{
-		Upstream:       orderValue(opt.Path.Upstream, opt.Vserver.Upstream),
-		TTL:            orderValue(opt.Path.TTL, opt.Vserver.TTL),
-		FollowRedirect: orderValue(opt.Path.FollowRedirect, opt.Vserver.FollowRedirect),
-		CacheKey:       orderValue(opt.Path.CacheKey, opt.Vserver.CacheKey),
-		Redis:          orderValue(opt.Path.Redis, opt.Vserver.Redis),
+		Upstream:    orderValue(opt.Path.Upstream, opt.Vserver.Upstream),
+		TTL:         orderValue(opt.Path.TTL, opt.Vserver.TTL),
+		MaxRedirect: orderValue(opt.Path.MaxRedirect, opt.Vserver.MaxRedirect),
+		CacheKey:    orderValue(opt.Path.CacheKey, opt.Vserver.CacheKey),
+		Redis:       orderValue(opt.Path.Redis, opt.Vserver.Redis),
 	}
 }
 
@@ -142,7 +142,7 @@ func (t *RedirectTransport) RoundTrip(req *http.Request) (resp *http.Response, e
 	return t.Do(req, 0)
 }
 
-func newHTTPRoundTripper(redirect bool) http.RoundTripper {
+func newHTTPRoundTripper(maxRedirect int) http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost = 10
 	originDialContext := transport.DialContext
@@ -151,10 +151,7 @@ func newHTTPRoundTripper(redirect bool) http.RoundTripper {
 		logger.Info("发起上游连接", "network", network, "addr", addr, "RemoteAddr", conn.RemoteAddr(), "LocalAddr", conn.LocalAddr(), "err", err)
 		return conn, err
 	}
-	if redirect {
-		return &RedirectTransport{next: transport, maxRedirect: 10, logger: logger.With("logger", "transport")}
-	}
-	return &RedirectTransport{next: transport, maxRedirect: 0, logger: logger.With("logger", "transport")}
+	return &RedirectTransport{next: transport, maxRedirect: maxRedirect, logger: logger.With("logger", "transport")}
 }
 
 func proxyRewrite(pr *httputil.ProxyRequest) {
@@ -169,19 +166,17 @@ func proxyRewrite(pr *httputil.ProxyRequest) {
 	pr.Out.Header.Set("Host", upstream.Host)
 }
 
-var (
-	defaultProxy    *httputil.ReverseProxy
-	noRedirectProxy *httputil.ReverseProxy
-)
+var cachedProxy = map[int]*httputil.ReverseProxy{}
 
-func InitProxy() {
-	defaultProxy = &httputil.ReverseProxy{
-		Rewrite:   proxyRewrite,
-		Transport: newHTTPRoundTripper(true),
-	}
-	noRedirectProxy = &httputil.ReverseProxy{
-		Rewrite:   proxyRewrite,
-		Transport: newHTTPRoundTripper(false),
+func getProxy(maxRedirect int) *httputil.ReverseProxy {
+	if p, ok := cachedProxy[maxRedirect]; !ok {
+		cachedProxy[maxRedirect] = &httputil.ReverseProxy{
+			Rewrite:   proxyRewrite,
+			Transport: newHTTPRoundTripper(maxRedirect),
+		}
+		return cachedProxy[maxRedirect]
+	} else {
+		return p
 	}
 }
 
@@ -236,11 +231,11 @@ func NewServer(opt ServerOpt) (obj *Server, err error) {
 		}
 	}
 
-	if opt.NoRedirect {
-		s.proxy = noRedirectProxy
-	} else {
-		s.proxy = defaultProxy
+	maxRedirect := 10
+	if opt.MaxRedirect != nil {
+		maxRedirect = *opt.MaxRedirect
 	}
+	s.proxy = getProxy(maxRedirect)
 	obj = s
 	return
 }

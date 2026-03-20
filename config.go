@@ -43,11 +43,11 @@ func (m *Rediscached) New() *Cacher {
 }
 
 type Model struct {
-	Upstream       *string                `yaml:"upstream"`
-	TTL            *map[int]time.Duration `yaml:"ttl,omitempty"`
-	FollowRedirect *bool                  `yaml:"follow_redirect"`
-	CacheKey       *string                `yaml:"cache_key,omitempty"`
-	Redis          *Rediscached           `yaml:"redis"`
+	Upstream    *string                `yaml:"upstream"`
+	TTL         *map[int]time.Duration `yaml:"ttl,omitempty"`
+	MaxRedirect *int                   `yaml:"max_redirect"`
+	CacheKey    *string                `yaml:"cache_key,omitempty"`
+	Redis       *Rediscached           `yaml:"redis"`
 }
 
 type Path struct {

@@ -62,7 +62,6 @@ func parseArgs() {
 		opts.Level = slog.LevelError
 	}
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &opts))
-	InitProxy()
 }
 
 func stop() {
@@ -135,8 +134,8 @@ func main() {
 			var server *Server
 			var err error
 			cache := orderValue(p.Redis, vs.Redis, conf.Redis).New()
-			redirect := orderValue(p.FollowRedirect, vs.FollowRedirect)
-			server, err = NewServer(ServerOpt{vs, p, cache, redirect != nil && !*redirect})
+			redirect := orderValue(p.MaxRedirect, vs.MaxRedirect)
+			server, err = NewServer(ServerOpt{vs, p, cache, redirect})
 			prefix, _ := strings.CutSuffix(p.Prefix, "/")
 			prefix = fmt.Sprint(prefix, "/")
 			if err != nil {

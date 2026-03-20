@@ -67,17 +67,11 @@ func (w *CacheResponseWriter) ContentLength() int64 {
 	switch {
 	case clHeader != "":
 		cl, err := strconv.ParseInt(clHeader, 10, 64)
-		if err != nil {
-			return -1
-		}
-		if cl < 0 {
-			// Content-Length values less than 0 are invalid.
-			// See: https://datatracker.ietf.org/doc/html/rfc2616/#section-
+		if err != nil || cl < 0 {
 			return -1
 		}
 		return cl
 	default:
-		// If the response length is not declared, set it to -1.
 		return -1
 	}
 }
@@ -176,15 +170,20 @@ func proxyRewrite(pr *httputil.ProxyRequest) {
 }
 
 var (
-	defaultProxy = httputil.ReverseProxy{
-		Rewrite:   proxyRewrite,
-		Transport: newHTTPRoundTripper(true),
-	}
-	noRedirectProxy = httputil.ReverseProxy{
-		Rewrite:   proxyRewrite,
-		Transport: newHTTPRoundTripper(true),
-	}
+	defaultProxy    *httputil.ReverseProxy
+	noRedirectProxy *httputil.ReverseProxy
 )
+
+func InitProxy() {
+	defaultProxy = &httputil.ReverseProxy{
+		Rewrite:   proxyRewrite,
+		Transport: newHTTPRoundTripper(true),
+	}
+	noRedirectProxy = &httputil.ReverseProxy{
+		Rewrite:   proxyRewrite,
+		Transport: newHTTPRoundTripper(false),
+	}
+}
 
 type Server struct {
 	getUrl       func(*http.Request) (*url.URL, error)
@@ -238,9 +237,9 @@ func NewServer(opt ServerOpt) (obj *Server, err error) {
 	}
 
 	if opt.NoRedirect {
-		s.proxy = &noRedirectProxy
+		s.proxy = noRedirectProxy
 	} else {
-		s.proxy = &defaultProxy
+		s.proxy = defaultProxy
 	}
 	obj = s
 	return

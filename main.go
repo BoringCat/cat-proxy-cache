@@ -62,6 +62,7 @@ func parseArgs() {
 		opts.Level = slog.LevelError
 	}
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &opts))
+	InitProxy()
 }
 
 func stop() {

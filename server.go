@@ -347,3 +347,16 @@ func (s *Server) GetUpstream(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+/*
+HandleRoute 创建路由
+*/
+func (s *Server) HandleRoute(pr, cr *mux.Route, host string) (error, error) {
+	pr.Methods(http.MethodGet, http.MethodHead).Handler(s.GetUpstream(s.GetCache(s.HandleProxy(s.proxy))))
+	cr.Methods("PRUNE").HandlerFunc(s.HandlePrune)
+	if len(host) > 0 {
+		pr.Host(host)
+		cr.Host(host)
+	}
+	return pr.GetError(), cr.GetError()
+}

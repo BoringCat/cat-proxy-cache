@@ -142,20 +142,13 @@ func main() {
 				logger.Error("创建路径监听失败", "err", err, "host", vs.Host, "prefix", prefix)
 				return
 			}
-			pr := r.PathPrefix(prefix).
-				Methods(http.MethodGet, http.MethodHead).
-				Handler(server.GetUpstream(server.GetCache(http.HandlerFunc(server.HandleProxy))))
-			cr := r.PathPrefix(prefix).Methods("PRUNE").HandlerFunc(server.HandlePrune)
-			if len(vs.Host) > 0 {
-				pr.Host(vs.Host)
-				cr.Host(vs.Host)
-			}
+			perr, cerr := server.HandleRoute(r.PathPrefix(prefix), r.PathPrefix(prefix), vs.Host)
 			logger.Debug("创建路径监听", "prefix", prefix, "upstream", *orderValue(p.Upstream, vs.Upstream), "host", vs.Host)
-			if err := pr.GetError(); err != nil {
-				logger.Error("创建数据路由失败", "err", err, "host", vs.Host, "prefix", prefix)
+			if perr != nil {
+				logger.Error("创建数据路由失败", "err", perr, "host", vs.Host, "prefix", prefix)
 			}
-			if err := cr.GetError(); err != nil {
-				logger.Error("创建清理路由失败", "err", err, "host", vs.Host, "prefix", prefix)
+			if cerr != nil {
+				logger.Error("创建清理路由失败", "err", cerr, "host", vs.Host, "prefix", prefix)
 			}
 		}
 	}

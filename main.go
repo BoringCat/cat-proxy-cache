@@ -78,22 +78,6 @@ func handleSignal(ch <-chan os.Signal) {
 	stop()
 }
 
-func newHTTPClient() (*http.Client, *http.Client) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConnsPerHost = 10
-	originDialContext := transport.DialContext
-	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		conn, err := originDialContext(ctx, network, addr)
-		logger.Info("发起上游连接", "network", network, "addr", addr, "RemoteAddr", conn.RemoteAddr(), "LocalAddr", conn.LocalAddr(), "err", err)
-		return conn, err
-	}
-	client := new(http.Client)
-	client.Transport = transport
-	noRedriectClient := new(http.Client)
-	noRedriectClient.Transport = transport
-	return client, noRedriectClient
-}
-
 func startListenServer(listenAddr string, h http.Handler) (err error) {
 	var listen net.Listener
 	listens := strings.SplitN(listenAddr, ":", 2)
@@ -145,18 +129,13 @@ func main() {
 	} else {
 		r.Handle("/metrics", promhttp.Handler())
 	}
-	client, noRedriectClient := newHTTPClient()
 	for _, vs := range conf.Servers {
 		for _, p := range vs.Paths {
 			var server *Server
 			var err error
 			cache := orderValue(p.Redis, vs.Redis, conf.Redis).New()
 			redirect := orderValue(p.FollowRedirect, vs.FollowRedirect)
-			if redirect != nil && !*redirect {
-				server, err = NewServer2(ServerOpt{vs, p, noRedriectClient, cache})
-			} else {
-				server, err = NewServer2(ServerOpt{vs, p, client, cache})
-			}
+			server, err = NewServer2(ServerOpt{vs, p, cache, redirect != nil && !*redirect})
 			prefix, _ := strings.CutSuffix(p.Prefix, "/")
 			prefix = fmt.Sprint(prefix, "/")
 			if err != nil {

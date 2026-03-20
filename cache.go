@@ -8,6 +8,7 @@ import (
 	"iter"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -121,7 +122,7 @@ func (c *Cacher) SetCache(ctx context.Context, host, path, key string, value *Ca
 	} else {
 		c.logger.Info("设置缓存成功", "key", key, "result", result)
 	}
-	if result, err := c.client.RPush(ctx, c.getIndexKey(host, path), key).Result(); err != nil {
+	if result, err := c.client.SAdd(ctx, c.getIndexKey(host, path), key).Result(); err != nil {
 		c.logger.Info("设置缓存索引失败", "err", err, "key", key, "result", result)
 	} else {
 		c.logger.Info("设置缓存索引成功", "key", key, "result", result)
@@ -136,9 +137,24 @@ func (c *Cacher) Scan(ctx context.Context, host, path string) iter.Seq[string] {
 		if err := resp.Err(); err != nil {
 			c.logger.Warn("Scan Keys失败", "err", err, "host", host)
 		}
-		iter := resp.Iterator()
-		for iter.Next(ctx) {
-			if !yield(iter.Val()) {
+		iterator := resp.Iterator()
+		for iterator.Next(ctx) {
+			if !yield(iterator.Val()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *Cacher) sScan(ctx context.Context, key string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		resp := c.client.SScan(ctx, key, 0, "*", c.itemsPerScan)
+		if err := resp.Err(); err != nil {
+			c.logger.Warn("SScan失败", "err", err, "key", key)
+		}
+		iterator := resp.Iterator()
+		for iterator.Next(ctx) {
+			if !yield(iterator.Val()) {
 				return
 			}
 		}
@@ -146,17 +162,8 @@ func (c *Cacher) Scan(ctx context.Context, host, path string) iter.Seq[string] {
 }
 
 func (c *Cacher) DeleteByKey(ctx context.Context, key string) {
-	keys, err := c.client.LRange(ctx, key, 0, -1).Result()
-	switch err {
-	case nil:
-	case redis.Nil:
-		c.logger.Debug("没有获取到缓存键列表", "key", key, "keys", keys)
-		return
-	default:
-		c.logger.Warn("获取缓存键失败", "err", err, "key", key)
-		return
-	}
-	c.logger.Debug("获取到缓存键列表", "key", key, "keys", keys)
+	keys := slices.Collect(c.sScan(ctx, key))
+	c.logger.Debug("获取到缓存键列表", "key", key, "keys", len(keys))
 	if err := c.client.Del(ctx, append(keys, key)...).Err(); err != nil {
 		c.logger.Warn("删除缓存失败", "err", err, "key", key)
 		return
@@ -165,17 +172,8 @@ func (c *Cacher) DeleteByKey(ctx context.Context, key string) {
 
 func (c *Cacher) DeleteByPath(ctx context.Context, host, path string) {
 	key := c.getIndexKey(host, path)
-	keys, err := c.client.LRange(ctx, key, 0, -1).Result()
-	switch err {
-	case nil:
-	case redis.Nil:
-		c.logger.Debug("没有获取到缓存键列表", "host", host, "path", path, "keys", keys)
-		return
-	default:
-		c.logger.Warn("获取缓存键失败", "err", err, "host", host, "path", path)
-		return
-	}
-	c.logger.Debug("获取到缓存键列表", "host", host, "path", key, "keys", keys)
+	keys := slices.Collect(c.sScan(ctx, key))
+	c.logger.Debug("获取到缓存键列表", "host", host, "path", key, "keys", len(keys))
 	if err := c.client.Del(ctx, append(keys, key)...).Err(); err != nil {
 		c.logger.Warn("删除缓存失败", "err", err, "host", host, "path", path)
 		return

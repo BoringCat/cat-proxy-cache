@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -30,23 +31,11 @@ type TemplateOpt struct {
 	Request  *http.Request
 }
 
-type ClientRoundTrip struct {
-	client *http.Client
-}
-
-func (c *ClientRoundTrip) RoundTrip(req *http.Request) (*http.Response, error) {
-	return c.client.Do(req)
-}
-
 type ServerOpt struct {
-	Vserver *VServer
-	Path    *Path
-	Client  *http.Client
-	Cache   *Cacher
-}
-
-func (opt *ServerOpt) RoundTripper() http.RoundTripper {
-	return &ClientRoundTrip{opt.Client}
+	Vserver    *VServer
+	Path       *Path
+	Cache      *Cacher
+	NoRedirect bool
 }
 
 func (opt *ServerOpt) getModel() *Model {
@@ -98,6 +87,48 @@ func (w *CacheResponseWriter) WriteHeader(statusCode int) {
 	w.resp.Code = statusCode
 	w.resp.Header = w.w.Header()
 	w.w.WriteHeader(statusCode)
+}
+
+type RedirectTransport struct {
+	next        http.RoundTripper
+	maxRedirect int
+}
+
+func (t *RedirectTransport) Do(req *http.Request, retry int) (resp *http.Response, err error) {
+	if resp, err = t.next.RoundTrip(req); err != nil {
+		return
+	}
+	if resp.StatusCode > 300 && resp.StatusCode < 400 {
+		if retry+1 >= t.maxRedirect {
+			return
+		}
+		url, lerr := resp.Location()
+		if lerr != nil {
+			return
+		}
+		req = req.Clone(req.Context())
+		req.URL = url
+		resp, err = t.Do(req, retry+1)
+	}
+	return
+}
+func (t *RedirectTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+	return t.Do(req, 0)
+}
+
+func newHTTPRoundTripper(redirect bool) http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 10
+	originDialContext := transport.DialContext
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := originDialContext(ctx, network, addr)
+		logger.Info("发起上游连接", "network", network, "addr", addr, "RemoteAddr", conn.RemoteAddr(), "LocalAddr", conn.LocalAddr(), "err", err)
+		return conn, err
+	}
+	if redirect {
+		return &RedirectTransport{next: transport}
+	}
+	return transport
 }
 
 type Server struct {
@@ -162,6 +193,7 @@ func NewServer2(opt ServerOpt) (obj *Server, err error) {
 			pr.Out.URL.RawPath = upstream.RawPath
 			pr.Out.URL.RawFragment = upstream.RawFragment
 		},
+		Transport: newHTTPRoundTripper(!opt.NoRedirect),
 	}
 	obj = s
 	return

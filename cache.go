@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -98,7 +99,11 @@ func (c *Cacher) getIndexKey(host, path string) string {
 func (c *Cacher) GetCache(ctx context.Context, key string) *CachedResp {
 	item, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
-		c.logger.Info("读取缓存失败", "err", err, "key", key)
+		if errors.Is(err, redis.Nil) {
+			c.logger.Debug("读取缓存失败", "err", err, "key", key)
+		} else {
+			c.logger.Info("读取缓存失败", "err", err, "key", key)
+		}
 		return nil
 	}
 	var cached CachedResp
@@ -120,12 +125,12 @@ func (c *Cacher) SetCache(ctx context.Context, host, path, key string, value *Ca
 	if result, err := c.client.Set(ctx, key, buf.Bytes(), ttl).Result(); err != nil {
 		c.logger.Info("设置缓存失败", "err", err, "key", key, "result", result)
 	} else {
-		c.logger.Info("设置缓存成功", "key", key, "result", result)
+		c.logger.Debug("设置缓存成功", "key", key, "result", result)
 	}
 	if result, err := c.client.SAdd(ctx, c.getIndexKey(host, path), key).Result(); err != nil {
 		c.logger.Info("设置缓存索引失败", "err", err, "key", key, "result", result)
 	} else {
-		c.logger.Info("设置缓存索引成功", "key", key, "result", result)
+		c.logger.Debug("设置缓存索引成功", "key", key, "result", result)
 	}
 }
 

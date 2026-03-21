@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -30,7 +29,6 @@ var (
 		Name:      "cached_total",
 		Help:      "命中缓存的数量",
 	}, []string{"method", "host", "path", "status_code"})
-	once sync.Once
 )
 
 type responseRecorder struct {

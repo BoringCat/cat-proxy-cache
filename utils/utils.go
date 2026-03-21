@@ -33,26 +33,21 @@ type Number interface {
 }
 
 func AddRange[T Number](start, end T, add T) iter.Seq[T] {
-	var this T = start
 	return func(yield func(T) bool) {
-		if !yield(this) {
-			return
-		}
-		this += add
-		if this > end {
-			return
+		for this := start; this <= end; this += add {
+			if !yield(this) {
+				return
+			}
 		}
 	}
 }
+
 func MultipRange[T Number](start, end T, multip T) iter.Seq[T] {
-	var this T = start
 	return func(yield func(T) bool) {
-		if !yield(this) {
-			return
-		}
-		this *= multip
-		if this > end {
-			return
+		for this := start; this <= end; this *= multip {
+			if !yield(this) {
+				return
+			}
 		}
 	}
 }

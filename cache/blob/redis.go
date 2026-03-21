@@ -63,7 +63,11 @@ func (b *RedisBlob) Index(ctx context.Context, opt *cache.TemplateOpt) (key stri
 
 func (b *RedisBlob) Get(ctx context.Context, key string) (data *cache.CacheData, err error) {
 	blob, err := b.backend.Do(ctx, b.backend.B().Get().Key(key).Build()).AsBytes()
-	if err != nil && !errors.Is(err, rueidis.Nil) {
+	switch err {
+	case nil:
+	case rueidis.Nil:
+		return nil, nil
+	default:
 		b.logger.Info("读取缓存失败", "err", err, "key", key)
 		return
 	}

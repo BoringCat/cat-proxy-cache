@@ -82,6 +82,36 @@ type MemcachedConfig struct {
 	Hashed  *string  `yaml:"hashed"`
 }
 
+type FsConfig struct {
+	Dir      string `yaml:"dir"`
+	Hash     string `yaml:"hash"`
+	LevelKey string `yaml:"level_key"`
+	FileMode int    `yaml:"file_mode"`
+	DirMode  int    `yaml:"dir_mode"`
+}
+
+type IndexConfig struct {
+	Backend string `yaml:"backend"`
+	Redis   *RedisConfig
+}
+
+type BlobOption struct {
+	CacheKey string `yaml:"cache_key,omitempty"`
+}
+
+type BlobConfig struct {
+	Backend    string           `yaml:"backend"`
+	Redis      *RedisConfig     `yaml:"redis"`
+	Memcached  *MemcachedConfig `yaml:"memcached"`
+	Fs         *FsConfig        `yaml:"fs"`
+	BlobOption `yaml:"-,inline"`
+}
+
+type CacheConfig struct {
+	Index *IndexConfig
+	Blob  *BlobConfig
+}
+
 type Model struct {
 	Upstream    *string                `yaml:"upstream"`
 	TTL         *map[int]time.Duration `yaml:"ttl,omitempty"`
@@ -100,27 +130,6 @@ type VServer struct {
 	Model `yaml:",inline"`
 	Host  string  `yaml:"host,omitempty"`
 	Paths []*Path `yaml:"paths"`
-}
-
-type IndexConfig struct {
-	Backend string `yaml:"backend"`
-	Redis   *RedisConfig
-}
-
-type BlobOption struct {
-	CacheKey string `yaml:"cache_key,omitempty"`
-}
-
-type BlobConfig struct {
-	Backend    string           `yaml:"backend"`
-	Redis      *RedisConfig     `yaml:"redis"`
-	Memcached  *MemcachedConfig `yaml:"memcached"`
-	BlobOption `yaml:"-,inline"`
-}
-
-type CacheConfig struct {
-	Index *IndexConfig
-	Blob  *BlobConfig
 }
 
 type Config struct {

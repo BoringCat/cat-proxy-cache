@@ -100,6 +100,11 @@ func NewCacher(conf *config.CacheConfig) (c *Cacher, err error) {
 				err = errors.Wrap(err, "创建缓存失败")
 				return
 			}
+		case "fs":
+			if blob, err = blob_cache.NewFsBlob(conf.Blob.Fs, &conf.Blob.BlobOption); err != nil {
+				err = errors.Wrap(err, "创建缓存失败")
+				return
+			}
 			// case "memcached":
 			// 	if blob, err = blob_cache.NewMemcacheBlob(conf.Blob.Memcached); err != nil {
 			// 		return

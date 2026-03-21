@@ -11,9 +11,14 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/alecthomas/kingpin/v2"
+	"github.com/boringcat/cat-proxy-cache/cache/cacher"
+	"github.com/boringcat/cat-proxy-cache/config"
+	"github.com/boringcat/cat-proxy-cache/server"
+	"github.com/boringcat/cat-proxy-cache/utils"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,6 +34,7 @@ var (
 	logger    *slog.Logger
 	callbacks []func() error
 	waitStop  context.CancelFunc
+	wg        *sync.WaitGroup
 
 	version, buildDate, commit, goVersion, gitBranch string
 )
@@ -62,6 +68,7 @@ func parseArgs() {
 		opts.Level = slog.LevelError
 	}
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &opts))
+	slog.SetDefault(logger)
 }
 
 func stop() {
@@ -83,7 +90,11 @@ func startListenServer(listenAddr string, h http.Handler) (err error) {
 	listens := strings.SplitN(listenAddr, ":", 2)
 	switch listens[0] {
 	case "unix":
+		if fileok, pid := checkServerExists(listens[1]); fileok && pid == 0 {
+			os.Remove(listens[1])
+		}
 		if listen, err = net.Listen("unix", listens[1]); err != nil {
+			logger.Error("创建监听失败", "listen", listens[1], "err", err)
 			return
 		}
 		if !strings.HasPrefix(listens[1], "@") {
@@ -94,11 +105,13 @@ func startListenServer(listenAddr string, h http.Handler) (err error) {
 		})
 	case "tcp":
 		if listen, err = net.Listen("tcp", listens[1]); err != nil {
-			panic(err)
+			logger.Error("创建监听失败", "listen", listens[1], "err", err)
+			return
 		}
 	default:
 		if listen, err = net.Listen("tcp", listenAddr); err != nil {
-			panic(err)
+			logger.Error("创建监听失败", "listen", listenAddr, "err", err)
+			return
 		}
 	}
 	callbacks = append(callbacks, listen.Close)
@@ -114,36 +127,44 @@ func startListenServer(listenAddr string, h http.Handler) (err error) {
 
 func main() {
 	parseArgs()
-	prometheus.MustRegister(
-		request_time, cached_total, response_data, cache_key_length,
-		prune_scan_histogram,
-	)
+	prometheus.MustRegister(request_time, cached_total, response_data)
 	sch := make(chan os.Signal, runtime.NumCPU())
 	signal.Notify(sch, syscall.SIGINT, syscall.SIGTERM)
 	go handleSignal(sch)
-	conf := loadConfig(configFile)
+	conf := config.LoadConfig(configFile)
 	r := mux.NewRouter().StrictSlash(true)
+	r.HandleFunc("/-/ping", handlePing)
 	r.Use(prometheusMiddleware)
 	if len(metricAddr) > 0 {
 		go startMetricServer()
 	} else {
 		r.Handle("/metrics", promhttp.Handler())
 	}
+	cache, err := cacher.NewCacher(conf.Cache)
+	if err != nil {
+		panic(err)
+	}
 	for _, vs := range conf.Servers {
 		for _, p := range vs.Paths {
-			var server *Server
-			var err error
-			cache := orderValue(p.Redis, vs.Redis, conf.Redis).New()
-			redirect := orderValue(p.MaxRedirect, vs.MaxRedirect)
-			server, err = NewServer(ServerOpt{vs, p, cache, redirect})
+			var svc *server.Server
+			redirect := utils.OrderValue(p.MaxRedirect, vs.MaxRedirect)
+			if svc, err = server.NewServer(server.ServerOpt{
+				Vserver:     vs,
+				Path:        p,
+				Cache:       cache,
+				MaxRedirect: redirect,
+			}); err != nil {
+				logger.Error("创建VServer失败", "err", err)
+				continue
+			}
 			prefix, _ := strings.CutSuffix(p.Prefix, "/")
 			prefix = fmt.Sprint(prefix, "/")
 			if err != nil {
 				logger.Error("创建路径监听失败", "err", err, "host", vs.Host, "prefix", prefix)
-				return
+				continue
 			}
-			perr, cerr := server.HandleRoute(r.PathPrefix(prefix), r.PathPrefix(prefix), vs.Host)
-			logger.Debug("创建路径监听", "prefix", prefix, "upstream", *orderValue(p.Upstream, vs.Upstream), "host", vs.Host)
+			perr, cerr := svc.HandleRoute(r.PathPrefix(prefix), r.PathPrefix(prefix), vs.Host)
+			logger.Debug("创建路径监听", "prefix", prefix, "upstream", *utils.OrderValue(p.Upstream, vs.Upstream), "host", vs.Host)
 			if perr != nil {
 				logger.Error("创建数据路由失败", "err", perr, "host", vs.Host, "prefix", prefix)
 			}
@@ -152,10 +173,9 @@ func main() {
 			}
 		}
 	}
-	var ctx context.Context
-	ctx, waitStop = context.WithCancel(context.TODO())
+	wg = new(sync.WaitGroup)
 	for _, addr := range listenAddrs {
-		go startListenServer(addr, r)
+		wg.Go(func() { startListenServer(addr, r) })
 	}
-	<-ctx.Done()
+	wg.Wait()
 }

@@ -1,16 +1,16 @@
-package main
+package utils
 
 import (
 	"iter"
 )
 
-func copyMap[K comparable, V any](dst map[K]V, src map[K]V) {
+func CopyMap[K comparable, V any](dst map[K]V, src map[K]V) {
 	for k, v := range src {
 		dst[k] = v
 	}
 }
 
-func orderValue[T any](values ...*T) *T {
+func OrderValue[T any](values ...*T) *T {
 	for _, val := range values {
 		if val != nil {
 			return val
@@ -32,7 +32,7 @@ type Number interface {
 	Int | Uint | Float
 }
 
-func addRange[T Number](start, end T, add T) iter.Seq[T] {
+func AddRange[T Number](start, end T, add T) iter.Seq[T] {
 	var this T = start
 	return func(yield func(T) bool) {
 		if !yield(this) {
@@ -44,7 +44,7 @@ func addRange[T Number](start, end T, add T) iter.Seq[T] {
 		}
 	}
 }
-func multipRange[T Number](start, end T, multip T) iter.Seq[T] {
+func MultipRange[T Number](start, end T, multip T) iter.Seq[T] {
 	var this T = start
 	return func(yield func(T) bool) {
 		if !yield(this) {

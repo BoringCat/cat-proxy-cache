@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"slices"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -30,20 +30,7 @@ var (
 		Name:      "cached_total",
 		Help:      "命中缓存的数量",
 	}, []string{"method", "host", "path", "status_code"})
-	cache_key_length = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Namespace: "cat_proxy",
-		Subsystem: "cache",
-		Name:      "key_length",
-		Help:      "缓存键的长度",
-		Buckets:   slices.Collect(addRange[float64](16, 256, 16)),
-	})
-	prune_scan_histogram = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Namespace: "cat_proxy",
-		Subsystem: "cache",
-		Name:      "prune_scan_seconds",
-		Help:      "扫描键的耗时",
-		Buckets:   slices.Collect(multipRange(0.001, 1.024, 2)),
-	})
+	once sync.Once
 )
 
 type responseRecorder struct {

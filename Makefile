@@ -44,7 +44,7 @@ BIN_FILE  := ${DISTDIR}/${FILENAME}
 # 编译命令
 BUILD_CMD := go build -buildvcs=false -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.buildDate=${MAKEDATE} -X main.commit=${COMMIT} -X main.gitBranch=${GIT_BRANCH} -X main.goVersion=${GO_VERSION}"
 # 入口文件或文件夹
-MAIN      := ./
+MAIN      := ./cmd
 # 关闭CGO
 export CGO_ENABLED := 0
 

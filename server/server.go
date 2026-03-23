@@ -117,7 +117,7 @@ handleCache 渲染缓存键并获取缓存
  2. 获取缓存并直接返回
 */
 func (s *Server) handleCache(w http.ResponseWriter, r *http.Request) (cacheKey string, resp *cache.CacheData) {
-	upstream, ok := r.Context().Value(UpStreamURL).(*url.URL)
+	upstream, ok := getUpStream(r.Context())
 	if !ok {
 		s.logger.Warn("没有传入上游URL")
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
@@ -211,8 +211,18 @@ HandleProxy 处理上游请求响应
 func (s *Server) HandleProxy(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		upstream := ctx.Value(UpStreamURL).(*url.URL)
-		cacheKey := ctx.Value(CacheKey).(string)
+		upstream, ok := getUpStream(ctx)
+		if !ok {
+			s.logger.Warn("没有传入上游URL")
+			next.ServeHTTP(w, r)
+			return
+		}
+		cacheKey, ok := getCacheKey(ctx)
+		if !ok {
+			s.logger.Warn("没有传入缓存键")
+			next.ServeHTTP(w, r)
+			return
+		}
 		pw := CacheResponseWriter{
 			w:      w,
 			getTTL: s.getTTL(r.Header),
@@ -243,8 +253,7 @@ func (s *Server) GetCache(next http.Handler) http.Handler {
 			w.WriteHeader(cached.Code)
 			w.Write(cached.Data)
 		} else {
-			ctx := context.WithValue(r.Context(), CacheKey, key)
-			r = r.WithContext(ctx)
+			r = r.WithContext(setCacheKey(r.Context(), key))
 			next.ServeHTTP(w, r)
 		}
 	})
@@ -265,8 +274,7 @@ func (s *Server) GetUpstream(next http.Handler) http.Handler {
 			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 			return
 		}
-		ctx := context.WithValue(r.Context(), UpStreamURL, upstream)
-		r = r.WithContext(ctx)
+		r = r.WithContext(setUpStream(r.Context(), upstream))
 		next.ServeHTTP(w, r)
 	})
 }

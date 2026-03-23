@@ -53,14 +53,7 @@ func (w *CacheResponseWriter) Flush() {
 	}
 }
 
-func (w *CacheResponseWriter) Write(p []byte) (n int, err error) {
-	if w.cached {
-		w.buffer.Write(p)
-	}
-	return w.w.Write(p)
-}
-
-func (w *CacheResponseWriter) WriteHeader(statusCode int) {
+func (w *CacheResponseWriter) setCacheStatus(statusCode int) {
 	if ttl, err := w.getTTL(statusCode); err == nil {
 		w.ttl = ttl
 	}
@@ -72,5 +65,19 @@ func (w *CacheResponseWriter) WriteHeader(statusCode int) {
 	}
 	w.statusCode = statusCode
 	w.header = w.w.Header()
+}
+
+func (w *CacheResponseWriter) Write(p []byte) (n int, err error) {
+	if w.statusCode == 0 {
+		w.setCacheStatus(http.StatusOK)
+	}
+	if w.cached {
+		w.buffer.Write(p)
+	}
+	return w.w.Write(p)
+}
+
+func (w *CacheResponseWriter) WriteHeader(statusCode int) {
+	w.setCacheStatus(http.StatusOK)
 	w.w.WriteHeader(statusCode)
 }

@@ -5,20 +5,23 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/pkg/errors"
 	"github.com/redis/rueidis"
 )
 
 type RedisSentinel struct {
-	MasterSet string `yaml:"master_set,omitempty"`
-	Username  string `yaml:"username,omitempty"`
-	Password  string `yaml:"password,omitempty"`
+	MasterSet string     `yaml:"master_set,omitempty"`
+	Username  string     `yaml:"username,omitempty"`
+	Password  string     `yaml:"password,omitempty"`
+	TLSConig  *TLSConfig `yaml:"tls"`
 }
 
 type RedisConfig struct {
-	Address  []string `yaml:"address"`
-	Db       int      `yaml:"db"`
-	Username string   `yaml:"username"`
-	Password string   `yaml:"password"`
+	Address  []string   `yaml:"address"`
+	Db       int        `yaml:"db"`
+	Username string     `yaml:"username"`
+	Password string     `yaml:"password"`
+	TLSConig *TLSConfig `yaml:"tls"`
 
 	Sentinel *RedisSentinel `yaml:"sentinel"`
 
@@ -68,6 +71,14 @@ func (c *RedisConfig) GetClient(shared bool) (client rueidis.Client, err error) 
 		opt.Sentinel.MasterSet = c.Sentinel.MasterSet
 		opt.Sentinel.Username = c.Sentinel.Username
 		opt.Sentinel.Password = c.Sentinel.Password
+		if opt.Sentinel.TLSConfig, err = c.Sentinel.TLSConig.NewTlsConfig(); err != nil {
+			err = errors.Wrap(err, "创建TLS配置失败")
+		}
+	}
+	if c.TLSConig != nil {
+		if opt.TLSConfig, err = c.TLSConig.NewTlsConfig(); err != nil {
+			err = errors.Wrap(err, "创建TLS配置失败")
+		}
 	}
 	if client, err = rueidis.NewClient(opt); err != nil {
 		return
